@@ -1,0 +1,10 @@
+V2_t                = 10s
+AIF_AUC_HUs         = 945.8049
+V1_mean_HU          = 50.0000
+V2_mean_HU          = 90.3183
+organ_mass_g        = 183.3755
+delta_HU_mean       = 40.3183
+flow_mlmin          = 445.4155
+flow_std            = 70.1564
+perfusion_mean_mlmin_g = 2.428980
+perfusion_std       = 0.382583

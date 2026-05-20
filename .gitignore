@@ -1,0 +1,25 @@
+# Intermediate large data files (rebuild via step1/step2/step0)
+intermediate/*.raw
+intermediate/*.npz
+intermediate/*.csv
+intermediate/metadata.toml
+
+# Frame outputs (47 GB sequence)
+frames/
+
+# Final perfusion artifacts (4.5 GB each)
+output/*.npy
+output/perfusion_viewer_*.html
+output/summary_*.txt
+
+# BasisSim phantom + recon outputs
+basissim_phantoms*/
+basissim_out*/
+
+# Logs
+logs_*.log
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
