@@ -23,3 +23,10 @@ logs_*.log
 # Python cache
 __pycache__/
 *.pyc
+
+# Generated images / DICOM / tabular figure outputs (keep scripts)
+dicom_*/
+output/*.png
+output/*.csv
+output/*.html
+*.png

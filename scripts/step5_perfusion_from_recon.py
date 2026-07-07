@@ -145,7 +145,7 @@ def aif_auc_hu_s(aif_csv, t_max_s, hu_per_mg_ml):
     c = np.asarray(cs, dtype=np.float64)
     order = np.argsort(t)
     t = t[order]; c = c[order]
-    trapz_fn = getattr(np, "trapezoid", np.trapz)
+    trapz_fn = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
     t_hi = min(float(t[-1]), float(t_max_s))
     t_fine = np.linspace(0.0, t_hi, max(int(t_hi / 0.01), 2))
     c_fine = np.interp(t_fine, t, c, left=0.0, right=c[-1])

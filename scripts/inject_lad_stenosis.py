@@ -34,16 +34,21 @@ def main():
     ap.add_argument("in_tree_dir")
     ap.add_argument("out_tree_dir")
     ap.add_argument("--stenosis-pct", type=float, default=80.0,
-                    help="diameter reduction percent (80 means residual D = 20%% of original)")
-    ap.add_argument("--stenosis-len-mm", type=float, default=5.0,
-                    help="length of LAD trunk to narrow (mm), measured by cumulative segment length")
+                    help="PEAK diameter reduction percent (80 means D = 20%% of original at the lesion midpoint)")
+    ap.add_argument("--stenosis-len-mm", type=float, default=10.0,
+                    help="total length of LAD trunk to taper (mm) — the lesion spans this length with smooth ends")
     ap.add_argument("--min-diam-um", type=float, default=1000.0,
                     help="only consider segments with D ≥ this when walking the main trunk")
+    ap.add_argument("--taper", choices=["cosine", "step"], default="cosine",
+                    help="profile shape across the trunk: 'cosine' = smooth bell (D varies "
+                         "from 1.0 at the entry, to residual at the midpoint, back to 1.0 at "
+                         "the exit); 'step' = uniform residual across all trunk segments (legacy)")
     args = ap.parse_args()
 
     assert 0 < args.stenosis_pct < 100, "stenosis-pct must be in (0, 100)"
     residual_factor = (1.0 - args.stenosis_pct / 100.0)
-    print(f"[stenosis] residual D factor = {residual_factor:.3f}  (R amplification ≈ {1/residual_factor**4:.0f}×)")
+    print(f"[stenosis] peak residual D factor = {residual_factor:.3f}  (peak R amplification ≈ {1/residual_factor**4:.0f}×)")
+    print(f"[stenosis] taper profile = {args.taper}")
 
     os.makedirs(args.out_tree_dir, exist_ok=True)
     lad_in  = os.path.join(args.in_tree_dir, "lad_segments.csv")
@@ -110,6 +115,32 @@ def main():
     print(f"[stenosis]   trunk: {len(trunk)} segments, cumulative length = {cum_len_mm:.3f} mm")
     print(f"[stenosis]   diameters along trunk (μm): " + ", ".join(f"{keep[s][2]:.0f}" for s in trunk))
 
+    # Build per-segment taper factor based on cumulative arc length from trunk entry.
+    # Cosine bell: 1.0 at s=0, residual at s=0.5, back to 1.0 at s=1.0.
+    import math
+    seg_factor = {}
+    if args.taper == "cosine":
+        # Use the segment's midpoint along the trunk as its position s ∈ [0, 1].
+        # Cumulative length up to (but not including) segment i:
+        cum = 0.0
+        L_total = cum_len_mm
+        for sid in trunk:
+            seg_len = keep[sid][1]
+            mid = cum + seg_len / 2.0
+            s = mid / max(L_total, 1e-9)
+            # bump(s) = (1 - cos(2π s)) / 2, profile = 1 - (1 - residual) * bump
+            bump = (1.0 - math.cos(2.0 * math.pi * s)) / 2.0
+            seg_factor[sid] = 1.0 - (1.0 - residual_factor) * bump
+            cum += seg_len
+    else:  # step
+        for sid in trunk:
+            seg_factor[sid] = residual_factor
+
+    print(f"[stenosis]   taper factors along trunk: " +
+          ", ".join(f"{seg_factor[s]:.3f}" for s in trunk))
+    print(f"[stenosis]   diameters after taper (μm): " +
+          ", ".join(f"{keep[s][2] * seg_factor[s]:.0f}" for s in trunk))
+
     trunk_set = set(trunk)
 
     # ── Pass 2: stream LAD CSV and rewrite trunk segments' diameter ──
@@ -131,7 +162,7 @@ def main():
             if sid in trunk_set:
                 try:
                     d = float(cols[i_D])
-                    cols[i_D] = f"{d * residual_factor:.4f}"
+                    cols[i_D] = f"{d * seg_factor[sid]:.4f}"
                     n_narrowed += 1
                 except (ValueError, IndexError):
                     pass

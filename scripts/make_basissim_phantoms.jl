@@ -109,6 +109,25 @@ end
     return aif_at(aif, t_eff) / df
 end
 
+# ── Flow-proportional first-pass myocardial uptake ──
+# Mullani-Gould recovers  P = 60·C_myo/(AUC·ρ), so to make recovered ≈ input
+# perfusion P [mL/min/g] we set  C_myo(t) = P · ∫₀ᵗAIF dτ · ρ / 60.
+const RHO_MYO = 1.053   # g/mL
+@inline function cum_auc(aif::AIFCurve, t::Float64)   # ∫₀ᵗ AIF dτ  [mg·s/mL]
+    t <= 0.0 && return 0.0
+    s = 0.0
+    @inbounds for k in 2:length(aif.t)
+        t0 = aif.t[k-1]; t1 = aif.t[k]
+        if t1 <= t
+            s += 0.5 * (aif.C[k-1] + aif.C[k]) * (t1 - t0)
+        else
+            t0 < t && (s += 0.5 * (aif.C[k-1] + aif_at(aif, t)) * (t - t0))
+            break
+        end
+    end
+    return s
+end
+
 # ── Cross-product label encoding ──
 @inline function xprod_label(bin_b::Int, bin_i::Int)::UInt16
     LABEL_BASE + UInt16((bin_b - 1) * (N_IODINE_BINS + 1) + bin_i)
@@ -120,8 +139,11 @@ function voxelize_phantom_at_time!(out::Array{UInt16,3},
                                    aif::AIFCurve, t::Float64,
                                    iodine_max::Float64;
                                    per_voxel_arrival::Union{Nothing, Array{Float32,3}} = nothing,
-                                   arrival_cap_s::Float64 = -1.0)
+                                   arrival_cap_s::Float64 = -1.0,
+                                   per_voxel_perfusion::Union{Nothing, Array{Float32,3}} = nothing,
+                                   cum_auc_t::Float64 = 0.0)
     nx, ny, nz = size(labels)
+    use_perf = per_voxel_perfusion !== nothing
 
     # AIF voxels always share one label.
     c_aif_t = contrast_aif(aif, t)
@@ -162,7 +184,12 @@ function voxelize_phantom_at_time!(out::Array{UInt16,3},
                 out[i, j, k] = label_aif
                 local_aif += 1
             elseif 15 <= L <= 18
-                if use_pv
+                if use_perf
+                    P = per_voxel_perfusion[i, j, k]
+                    cmyo = (isfinite(P) && P > 0.0) ? Float64(P) * cum_auc_t * RHO_MYO / 60.0 : 0.0
+                    bin = clamp(round(Int, cmyo / iodine_max * N_IODINE_BINS), 0, N_IODINE_BINS)
+                    out[i, j, k] = xprod_label(AORTA_BIN_B, bin)   # bin_b=100 → total voxel iodine = cmyo
+                elseif use_pv
                     a_raw = per_voxel_arrival[i, j, k]
                     a = if isfinite(a_raw)
                         arrival_cap_s > 0.0 ? min(Float64(a_raw), arrival_cap_s) : Float64(a_raw)
@@ -251,6 +278,8 @@ function main()
     use_pv = false
     pv_path = ""
     cap_s = -1.0
+    use_perf = false
+    perf_path = ""
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -259,6 +288,9 @@ function main()
             pv_path = ARGS[i+1]; i += 2
         elseif a == "--arrival-cap"
             cap_s = parse(Float64, ARGS[i+1]); i += 2
+        elseif a == "--use-perfusion-map"
+            use_perf = true
+            perf_path = ARGS[i+1]; i += 2
         else
             push!(pos, a); i += 1
         end
@@ -282,6 +314,14 @@ function main()
         read!(pv_path, pv_arrival)
     end
 
+    perf_map = nothing
+    if use_perf
+        isfile(perf_path) || error("perfusion map not found: $perf_path")
+        @printf("[load] per-voxel perfusion map = %s  (flow-proportional mode)\n", perf_path)
+        perf_map = Array{Float32}(undef, PHANTOM_DIMS)
+        read!(perf_path, perf_map)
+    end
+
     @printf("threads = %d\n", nthreads())
     @printf("aif_csv = %s\n", aif_csv)
     @printf("V1 time = %.2fs (baseline)\n", t_v1)
@@ -296,6 +336,15 @@ function main()
     iodine_max = maximum(aif.C)
     if iodine_max <= 0
         error("AIF max is non-positive; cannot scale iodine bins")
+    end
+    if use_perf
+        auc_v2 = cum_auc(aif, t_v2)
+        finite_p = filter(p -> isfinite(p) && p > 0, vec(perf_map))
+        maxP = isempty(finite_p) ? 0.0 : maximum(finite_p)
+        max_cmyo = maxP * auc_v2 * RHO_MYO / 60.0
+        iodine_max = max(iodine_max, max_cmyo) * 1.05
+        @printf("[perfusion] AUC(0..%.1fs)=%.3f mg·s/mL, maxP=%.2f mL/min/g → max C_myo=%.2f mg/mL → iodine_max=%.2f\n",
+                t_v2, auc_v2, maxP, max_cmyo, iodine_max)
     end
     @printf("[encoding] iodine_max = %.4f mg/mL (= max(AIF)); N_iodine_bins = %d\n",
             iodine_max, N_IODINE_BINS)
@@ -326,7 +375,9 @@ function main()
 
         n_aif, n_myo = voxelize_phantom_at_time!(out_u16, labels, aorta_mask, aif, t, iodine_max;
                                                   per_voxel_arrival = pv_arrival,
-                                                  arrival_cap_s = cap_s)
+                                                  arrival_cap_s = cap_s,
+                                                  per_voxel_perfusion = perf_map,
+                                                  cum_auc_t = cum_auc(aif, t))
         @printf("[voxelize] aif_voxels=%d  myo_voxels=%d  (%.1fs)\n", n_aif, n_myo, time()-t0); flush(stdout)
 
         raw_path = joinpath(sub, "phantom.raw")

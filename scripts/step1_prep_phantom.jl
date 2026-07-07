@@ -89,74 +89,23 @@ end
 println("[step1]   $(round(filesize(baseline_path)/1e9; digits=2)) GB written")
 flush(stdout)
 
-# ── Voxelize aorta lumen from dias_aorta NRB surface ──
-println("\n[step1] Parsing NRB: $(NRB_PATH) …")
+# ── Aorta lumen mask = XCAT aorta label (28), phantom-aligned ──
+# Previously this rasterized a cylinder along the NRB dias_aorta centerline, but
+# the diastolic NRB surface does not co-register with the act_1 LABEL volume:
+# the mask landed ~16-27 voxels off and spilled ~9% into the spine (descending
+# aorta runs against the vertebra). The XCAT label IS the phantom anatomy, so it
+# aligns exactly — no NRB parse, no transform, no cylinder approximation.
+println("\n[step1] Building aorta lumen mask from XCAT label 28 …")
 flush(stdout)
-surfaces = parse_xcat_nrb(NRB_PATH)
-obj = xcat_object_dict(surfaces)
-haskey(obj, "dias_aorta") || error("dias_aorta surface not found in NRB")
-aorta_surface = obj["dias_aorta"]
-
-println("[step1] Extracting aorta centerline …")
-flush(stdout)
-cline = xcat_centerline_from_surface(aorta_surface; circumferential_samples=64,
-                                     axial_samples=400)
-println("[step1]   centerline: $(length(cline.centers)) points, " *
-        "radii [$(round(minimum(cline.radii); digits=2))–$(round(maximum(cline.radii); digits=2))] mm")
-flush(stdout)
-
-# Apply NRB→phantom transform: NRB mm → cm via COORDINATE_SCALE, then add offset.
-ph_centers = SVector{3,Float64}[
-    SVector(c[1]*COORDINATE_SCALE, c[2]*COORDINATE_SCALE, c[3]*COORDINATE_SCALE) +
-        NRB_TO_PHANTOM_OFFSET
-    for c in cline.centers
-]
-ph_radii = [r * COORDINATE_SCALE for r in cline.radii]
-
-println("[step1] Rasterizing aorta lumen as capsule chain …")
-flush(stdout)
+aorta_label = UInt8(28)
 aorta_mask = zeros(UInt8, PHANTOM_DIMS)
-n_segs = length(ph_centers) - 1
-@inbounds Threads.@threads for s in 1:n_segs
-    a = ph_centers[s]
-    b = ph_centers[s+1]
-    r = 0.5 * (ph_radii[s] + ph_radii[s+1])
-    r <= 0 && continue
-
-    seg_lo = min.(a, b) .- r
-    seg_hi = max.(a, b) .+ r
-
-    i0 = max(1, floor(Int, seg_lo[1] / VOXEL_SIZE_CM) + 1)
-    j0 = max(1, floor(Int, seg_lo[2] / VOXEL_SIZE_CM) + 1)
-    k0 = max(1, floor(Int, seg_lo[3] / VOXEL_SIZE_CM) + 1)
-    i1 = min(PHANTOM_DIMS[1], ceil(Int, seg_hi[1] / VOXEL_SIZE_CM) + 1)
-    j1 = min(PHANTOM_DIMS[2], ceil(Int, seg_hi[2] / VOXEL_SIZE_CM) + 1)
-    k1 = min(PHANTOM_DIMS[3], ceil(Int, seg_hi[3] / VOXEL_SIZE_CM) + 1)
-
-    ab = b - a
-    ab_len2 = dot(ab, ab)
-    r2 = r * r
-
-    for kk in k0:k1, jj in j0:j1, ii in i0:i1
-        px = (ii - 0.5) * VOXEL_SIZE_CM
-        py = (jj - 0.5) * VOXEL_SIZE_CM
-        pz = (kk - 0.5) * VOXEL_SIZE_CM
-        apx = px - a[1]; apy = py - a[2]; apz = pz - a[3]
-        if ab_len2 <= 1e-24
-            d2 = apx*apx + apy*apy + apz*apz
-        else
-            t = clamp((apx*ab[1] + apy*ab[2] + apz*ab[3]) / ab_len2, 0.0, 1.0)
-            dx = apx - t*ab[1]; dy = apy - t*ab[2]; dz = apz - t*ab[3]
-            d2 = dx*dx + dy*dy + dz*dz
-        end
-        if d2 <= r2
-            aorta_mask[ii, jj, kk] = UInt8(1)
-        end
+@inbounds Threads.@threads for k in 1:PHANTOM_DIMS[3]
+    for j in 1:PHANTOM_DIMS[2], i in 1:PHANTOM_DIMS[1]
+        phantom[i, j, k] == aorta_label && (aorta_mask[i, j, k] = UInt8(1))
     end
 end
-
 n_aorta = count(==(UInt8(1)), aorta_mask)
-println("[step1]   aorta lumen: $(n_aorta) voxels = $(round(n_aorta * VOXEL_SIZE_CM^3; digits=2)) cm³")
+println("[step1]   aorta lumen (XCAT label 28): $(n_aorta) voxels = $(round(n_aorta * VOXEL_SIZE_CM^3; digits=2)) cm³")
 flush(stdout)
 
 aorta_path = joinpath(OUT_DIR, "aorta_lumen_mask.raw")
