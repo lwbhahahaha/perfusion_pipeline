@@ -96,8 +96,7 @@ iodine).
 `build_perfusion_viewer.py`, `build_basissim_perfusion_viewer.py`,
 `surface_perfusion_viewer.py`, `smooth_downsample_viewer.py`,
 `build_chamber_mesh.py`, `extract_tree_overlay.py`, `qa_heart_crop.py`,
-`qa_viewer.py`, `rsna_figure.py` — 3D perfusion/tree viewers and figure
-helpers.
+`qa_viewer.py` — 3D perfusion/tree viewers and figure helpers.
 
 ---
 
